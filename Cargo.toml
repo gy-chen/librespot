@@ -20,6 +20,11 @@ name = "librespot"
 path = "src/main.rs"
 doc = false
 
+[[bin]]
+name = "gyrespot"
+path = "examples/subprocess.rs"
+doc = false
+
 [dependencies.librespot-audio]
 path = "audio"
 version = "0.3.1"
