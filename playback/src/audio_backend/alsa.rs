@@ -4,16 +4,18 @@ use crate::convert::Converter;
 use crate::decoder::AudioPacket;
 use crate::{NUM_CHANNELS, SAMPLE_RATE};
 use alsa::device_name::HintIter;
-use alsa::pcm::{Access, Format, HwParams, PCM};
+use alsa::pcm::{Access, Format, Frames, HwParams, PCM};
 use alsa::{Direction, ValueOr};
 use std::cmp::min;
 use std::process::exit;
-use std::time::Duration;
 use thiserror::Error;
 
-// 0.5 sec buffer.
-const PERIOD_TIME: Duration = Duration::from_millis(100);
-const BUFFER_TIME: Duration = Duration::from_millis(500);
+const MAX_BUFFER: Frames = (SAMPLE_RATE / 2) as Frames;
+const MIN_BUFFER: Frames = (SAMPLE_RATE / 10) as Frames;
+const ZERO_FRAMES: Frames = 0;
+
+const MAX_PERIOD_DIVISOR: Frames = 4;
+const MIN_PERIOD_DIVISOR: Frames = 10;
 
 #[derive(Debug, Error)]
 enum AlsaError {
@@ -80,6 +82,23 @@ impl From<AlsaError> for SinkError {
     }
 }
 
+impl From<AudioFormat> for Format {
+    fn from(f: AudioFormat) -> Format {
+        use AudioFormat::*;
+        match f {
+            F64 => Format::float64(),
+            F32 => Format::float(),
+            S32 => Format::s32(),
+            S24 => Format::s24(),
+            S16 => Format::s16(),
+            #[cfg(target_endian = "little")]
+            S24_3 => Format::S243LE,
+            #[cfg(target_endian = "big")]
+            S24_3 => Format::S243BE,
+        }
+    }
+}
+
 pub struct AlsaSink {
     pcm: Option<PCM>,
     format: AudioFormat,
@@ -87,20 +106,50 @@ pub struct AlsaSink {
     period_buffer: Vec<u8>,
 }
 
-fn list_outputs() -> SinkResult<()> {
-    println!("Listing available Alsa outputs:");
-    for t in &["pcm", "ctl", "hwdep"] {
-        println!("{} devices:", t);
+fn list_compatible_devices() -> SinkResult<()> {
+    println!("\n\n\tCompatible alsa device(s):\n");
+    println!("\t------------------------------------------------------\n");
 
-        let i = HintIter::new_str(None, t).map_err(|_| AlsaError::Parsing)?;
+    let i = HintIter::new_str(None, "pcm").map_err(|_| AlsaError::Parsing)?;
 
-        for a in i {
-            if let Some(Direction::Playback) = a.direction {
-                // mimic aplay -L
-                let name = a.name.ok_or(AlsaError::Parsing)?;
-                let desc = a.desc.ok_or(AlsaError::Parsing)?;
+    for a in i {
+        if let Some(Direction::Playback) = a.direction {
+            let name = a.name.ok_or(AlsaError::Parsing)?;
+            let desc = a.desc.ok_or(AlsaError::Parsing)?;
 
-                println!("{}\n\t{}\n", name, desc.replace("\n", "\n\t"));
+            if let Ok(pcm) = PCM::new(&name, Direction::Playback, false) {
+                if let Ok(hwp) = HwParams::any(&pcm) {
+                    // Only show devices that support
+                    // 2 ch 44.1 Interleaved.
+                    if hwp.set_access(Access::RWInterleaved).is_ok()
+                        && hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest).is_ok()
+                        && hwp.set_channels(NUM_CHANNELS as u32).is_ok()
+                    {
+                        println!("\tDevice:\n\n\t\t{}\n", name);
+                        println!("\tDescription:\n\n\t\t{}\n", desc.replace("\n", "\n\t\t"));
+
+                        let mut supported_formats = vec![];
+
+                        for f in &[
+                            AudioFormat::S16,
+                            AudioFormat::S24,
+                            AudioFormat::S24_3,
+                            AudioFormat::S32,
+                            AudioFormat::F32,
+                            AudioFormat::F64,
+                        ] {
+                            if hwp.test_format(Format::from(*f)).is_ok() {
+                                supported_formats.push(format!("{:?}", f));
+                            }
+                        }
+
+                        println!(
+                            "\tSupported Format(s):\n\n\t\t{}\n",
+                            supported_formats.join(" ")
+                        );
+                        println!("\t------------------------------------------------------\n");
+                    }
+                };
             }
         }
     }
@@ -114,19 +163,6 @@ fn open_device(dev_name: &str, format: AudioFormat) -> SinkResult<(PCM, usize)> 
         e,
     })?;
 
-    let alsa_format = match format {
-        AudioFormat::F64 => Format::float64(),
-        AudioFormat::F32 => Format::float(),
-        AudioFormat::S32 => Format::s32(),
-        AudioFormat::S24 => Format::s24(),
-        AudioFormat::S16 => Format::s16(),
-
-        #[cfg(target_endian = "little")]
-        AudioFormat::S24_3 => Format::S243LE,
-        #[cfg(target_endian = "big")]
-        AudioFormat::S24_3 => Format::S243BE,
-    };
-
     let bytes_per_period = {
         let hwp = HwParams::any(&pcm).map_err(AlsaError::HwParams)?;
 
@@ -135,6 +171,8 @@ fn open_device(dev_name: &str, format: AudioFormat) -> SinkResult<(PCM, usize)> 
                 device: dev_name.to_string(),
                 e,
             })?;
+
+        let alsa_format = Format::from(format);
 
         hwp.set_format(alsa_format)
             .map_err(|e| AlsaError::UnsupportedFormat {
@@ -159,28 +197,187 @@ fn open_device(dev_name: &str, format: AudioFormat) -> SinkResult<(PCM, usize)> 
                 e,
             })?;
 
-        hwp.set_buffer_time_near(BUFFER_TIME.as_micros() as u32, ValueOr::Nearest)
-            .map_err(AlsaError::HwParams)?;
+        // Clone the hwp while it's in
+        // a good working state so that
+        // in the event of an error setting
+        // the buffer and period sizes
+        // we can use the good working clone
+        // instead of the hwp that's in an
+        // error state.
+        let hwp_clone = hwp.clone();
 
-        hwp.set_period_time_near(PERIOD_TIME.as_micros() as u32, ValueOr::Nearest)
-            .map_err(AlsaError::HwParams)?;
+        // At a sampling rate of 44100:
+        // The largest buffer is 22050 Frames (500ms) with 5512 Frame periods (125ms).
+        // The smallest buffer is 4410 Frames (100ms) with 441 Frame periods (10ms).
+        // Actual values may vary.
+        //
+        // Larger buffer and period sizes are preferred as extremely small values
+        // will cause high CPU useage.
+        //
+        // If no buffer or period size is in those ranges or an error happens
+        // trying to set the buffer or period size use the device's defaults
+        // which may not be ideal but are *hopefully* serviceable.
 
-        pcm.hw_params(&hwp).map_err(AlsaError::Pcm)?;
+        let buffer_size = {
+            let max = match hwp.get_buffer_size_max() {
+                Err(e) => {
+                    trace!("Error getting the device's max Buffer size: {}", e);
+                    ZERO_FRAMES
+                }
+                Ok(s) => s,
+            };
 
-        let swp = pcm.sw_params_current().map_err(AlsaError::Pcm)?;
+            let min = match hwp.get_buffer_size_min() {
+                Err(e) => {
+                    trace!("Error getting the device's min Buffer size: {}", e);
+                    ZERO_FRAMES
+                }
+                Ok(s) => s,
+            };
+
+            let buffer_size = if min < max {
+                match (MIN_BUFFER..=MAX_BUFFER)
+                    .rev()
+                    .find(|f| (min..=max).contains(f))
+                {
+                    Some(size) => {
+                        trace!("Desired Frames per Buffer: {:?}", size);
+
+                        match hwp.set_buffer_size_near(size) {
+                            Err(e) => {
+                                trace!("Error setting the device's Buffer size: {}", e);
+                                ZERO_FRAMES
+                            }
+                            Ok(s) => s,
+                        }
+                    }
+                    None => {
+                        trace!("No Desired Buffer size in range reported by the device.");
+                        ZERO_FRAMES
+                    }
+                }
+            } else {
+                trace!("The device's min reported Buffer size was greater than or equal to it's max reported Buffer size.");
+                ZERO_FRAMES
+            };
+
+            if buffer_size == ZERO_FRAMES {
+                trace!(
+                    "Desired Buffer Frame range: {:?} - {:?}",
+                    MIN_BUFFER,
+                    MAX_BUFFER
+                );
+
+                trace!(
+                    "Actual Buffer Frame range as reported by the device: {:?} - {:?}",
+                    min,
+                    max
+                );
+            }
+
+            buffer_size
+        };
+
+        let period_size = {
+            if buffer_size == ZERO_FRAMES {
+                ZERO_FRAMES
+            } else {
+                let max = match hwp.get_period_size_max() {
+                    Err(e) => {
+                        trace!("Error getting the device's max Period size: {}", e);
+                        ZERO_FRAMES
+                    }
+                    Ok(s) => s,
+                };
+
+                let min = match hwp.get_period_size_min() {
+                    Err(e) => {
+                        trace!("Error getting the device's min Period size: {}", e);
+                        ZERO_FRAMES
+                    }
+                    Ok(s) => s,
+                };
+
+                let max_period = buffer_size / MAX_PERIOD_DIVISOR;
+                let min_period = buffer_size / MIN_PERIOD_DIVISOR;
+
+                let period_size = if min < max && min_period < max_period {
+                    match (min_period..=max_period)
+                        .rev()
+                        .find(|f| (min..=max).contains(f))
+                    {
+                        Some(size) => {
+                            trace!("Desired Frames per Period: {:?}", size);
+
+                            match hwp.set_period_size_near(size, ValueOr::Nearest) {
+                                Err(e) => {
+                                    trace!("Error setting the device's Period size: {}", e);
+                                    ZERO_FRAMES
+                                }
+                                Ok(s) => s,
+                            }
+                        }
+                        None => {
+                            trace!("No Desired Period size in range reported by the device.");
+                            ZERO_FRAMES
+                        }
+                    }
+                } else {
+                    trace!("The device's min reported Period size was greater than or equal to it's max reported Period size,");
+                    trace!("or the desired min Period size was greater than or equal to the desired max Period size.");
+                    ZERO_FRAMES
+                };
+
+                if period_size == ZERO_FRAMES {
+                    trace!("Buffer size: {:?}", buffer_size);
+
+                    trace!(
+                        "Desired Period Frame range: {:?} (Buffer size / {:?}) - {:?} (Buffer size / {:?})",
+                        min_period,
+                        MIN_PERIOD_DIVISOR,
+                        max_period,
+                        MAX_PERIOD_DIVISOR,
+                    );
+
+                    trace!(
+                        "Actual Period Frame range as reported by the device: {:?} - {:?}",
+                        min,
+                        max
+                    );
+                }
+
+                period_size
+            }
+        };
+
+        if buffer_size == ZERO_FRAMES || period_size == ZERO_FRAMES {
+            trace!(
+                "Failed to set Buffer and/or Period size, falling back to the device's defaults."
+            );
+
+            trace!("You may experience higher than normal CPU usage and/or audio issues.");
+
+            pcm.hw_params(&hwp_clone).map_err(AlsaError::Pcm)?;
+        } else {
+            pcm.hw_params(&hwp).map_err(AlsaError::Pcm)?;
+        }
+
+        let hwp = pcm.hw_params_current().map_err(AlsaError::Pcm)?;
 
         // Don't assume we got what we wanted. Ask to make sure.
         let frames_per_period = hwp.get_period_size().map_err(AlsaError::HwParams)?;
 
         let frames_per_buffer = hwp.get_buffer_size().map_err(AlsaError::HwParams)?;
 
+        let swp = pcm.sw_params_current().map_err(AlsaError::Pcm)?;
+
         swp.set_start_threshold(frames_per_buffer - frames_per_period)
             .map_err(AlsaError::SwParams)?;
 
         pcm.sw_params(&swp).map_err(AlsaError::Pcm)?;
 
-        trace!("Frames per Buffer: {:?}", frames_per_buffer);
-        trace!("Frames per Period: {:?}", frames_per_period);
+        trace!("Actual Frames per Buffer: {:?}", frames_per_buffer);
+        trace!("Actual Frames per Period: {:?}", frames_per_period);
 
         // Let ALSA do the math for us.
         pcm.frames_to_bytes(frames_per_period) as usize
@@ -194,7 +391,7 @@ fn open_device(dev_name: &str, format: AudioFormat) -> SinkResult<(PCM, usize)> 
 impl Open for AlsaSink {
     fn open(device: Option<String>, format: AudioFormat) -> Self {
         let name = match device.as_deref() {
-            Some("?") => match list_outputs() {
+            Some("?") => match list_compatible_devices() {
                 Ok(_) => {
                     exit(0);
                 }

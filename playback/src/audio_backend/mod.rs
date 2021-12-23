@@ -104,7 +104,7 @@ use self::gstreamer::GstreamerSink;
 
 #[cfg(any(feature = "rodio-backend", feature = "rodiojack-backend"))]
 mod rodio;
-#[cfg(any(feature = "rodio-backend", feature = "rodiojack-backend"))]
+#[cfg(feature = "rodio-backend")]
 use self::rodio::RodioSink;
 
 #[cfg(feature = "sdl-backend")]
@@ -146,11 +146,6 @@ pub fn find(name: Option<String>) -> Option<SinkBuilder> {
             .find(|backend| name == backend.0)
             .map(|backend| backend.1)
     } else {
-        Some(
-            BACKENDS
-                .first()
-                .expect("No backends were enabled at build time")
-                .1,
-        )
+        BACKENDS.first().map(|backend| backend.1)
     }
 }
