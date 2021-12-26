@@ -45,24 +45,26 @@ async fn main() {
 
         match command {
             Ok(command) => {
-                match command.type_ {
-                    CommandType::PLAY => _play(&mut player, &command.track_id).await
+                match execute_command(&mut player, &command).await {
+                    Ok(_) => eprintln!("="),
+                    Err(msg) => eprintln!("?{}", msg)
                 }
-                eprintln!("=");
             }
-            Err(e) => eprintln!("? {}", e)
+            Err(e) => eprintln!("?{}", e)
         }
     }
 }
 
-async fn _play(player: &mut Player, track_id: &str) {
-    match SpotifyId::from_base62(track_id.trim()) {
-        Ok(track) => {
-            player.load(track, true, 0);
-            player.await_end_of_track().await;
-        }
-        Err(_) => ()
+async fn execute_command(player: &mut Player, command: &Command) -> Result<(), String> {
+    match command.type_ {
+        CommandType::PLAY => _play(player, command.track_id).await
     }
+}
+
+async fn _play(player: &mut Player, track_id: SpotifyId) -> Result<(), String> {
+    player.load(track_id, true, 0);
+    player.await_end_of_track().await;
+    return Ok(());
 }
 
 enum CommandType {
@@ -71,7 +73,7 @@ enum CommandType {
 
 struct Command {
     type_: CommandType,
-    track_id: String,
+    track_id: SpotifyId,
 }
 
 impl Command {
@@ -79,10 +81,25 @@ impl Command {
         let args: Vec<&str> = raw.split_whitespace().collect();
         match args.get(0) {
             Some(&"play") => match args.get(1) {
-                Some(&track_id) => Ok(Command {
-                    type_: CommandType::PLAY,
-                    track_id: String::from(track_id),
-                }),
+                Some(&track_id) => {
+                    match SpotifyId::from_uri(&track_id) {
+                        Ok(track_id) => Ok(
+                            Command {
+                                type_: CommandType::PLAY,
+                                track_id,
+                            }
+                        ),
+                        Err(_) => match SpotifyId::from_base62(&track_id) {
+                            Ok(track_id) => Ok(
+                                Command {
+                                    type_: CommandType::PLAY,
+                                    track_id,
+                                }
+                            ),
+                            Err(_) => Err("cannot parse track_id:")
+                        }
+                    }
+                }
                 _ => Err("expect track_id parameter")
             },
             _ => Err("unknown command")
