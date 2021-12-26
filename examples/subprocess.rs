@@ -1,6 +1,9 @@
 use std::env;
+use std::fs::File;
+use log::LevelFilter;
 
 use tokio::io::{AsyncBufReadExt, BufReader, stdin};
+use simplelog::{Config, WriteLogger};
 
 use librespot::core::config::SessionConfig;
 use librespot_core::authentication::Credentials;
@@ -12,6 +15,8 @@ use librespot_playback::player::Player;
 
 #[tokio::main]
 async fn main() {
+    WriteLogger::init(LevelFilter::Debug, Config::default(), File::create("gyrespot.log").unwrap()).expect("Cannot setup write logger");
+
     let session_config = SessionConfig::default();
     let player_config = PlayerConfig::default();
     let audio_format = AudioFormat::default();

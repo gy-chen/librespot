@@ -56,6 +56,7 @@ version = "0.3.1"
 [dependencies]
 base64 = "0.13"
 env_logger =  {version = "0.8", default-features = false, features = ["termcolor","humantime","atty"]}
+simplelog = "^0.10.0"
 futures-util = { version = "0.3", default_features = false }
 getopts = "0.2.21"
 hex = "0.4"
