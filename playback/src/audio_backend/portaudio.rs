@@ -140,7 +140,7 @@ impl<'a> Sink for PortAudioSink<'a> {
         Ok(())
     }
 
-    fn write(&mut self, packet: &AudioPacket, converter: &mut Converter) -> SinkResult<()> {
+    fn write(&mut self, packet: AudioPacket, converter: &mut Converter) -> SinkResult<()> {
         macro_rules! write_sink {
             (ref mut $stream: expr, $samples: expr) => {
                 $stream.as_mut().unwrap().write($samples)
