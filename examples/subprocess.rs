@@ -14,7 +14,7 @@ use librespot_playback::audio_backend::SinkBuilder;
 use librespot_playback::config::{AudioFormat, PlayerConfig};
 use librespot_playback::player::Player;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     WriteLogger::init(
         LevelFilter::Debug,
