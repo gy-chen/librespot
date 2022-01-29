@@ -36,6 +36,7 @@ pub struct Player {
     commands: Option<mpsc::UnboundedSender<PlayerCommand>>,
     thread_handle: Option<thread::JoinHandle<()>>,
     play_request_id_generator: SeqGenerator<u64>,
+    is_invalid: bool
 }
 
 #[derive(PartialEq, Debug, Clone, Copy)]
@@ -350,15 +351,17 @@ impl Player {
                 commands: Some(cmd_tx),
                 thread_handle: Some(handle),
                 play_request_id_generator: SeqGenerator::new(0),
+                is_invalid: false
             },
             event_receiver,
         )
     }
 
-    fn command(&self, cmd: PlayerCommand) {
+    fn command(&mut self, cmd: PlayerCommand) {
         if let Some(commands) = self.commands.as_ref() {
             if let Err(e) = commands.send(cmd) {
                 error!("Player Commands Error: {}", e);
+                self.is_invalid = true
             }
         }
     }
@@ -375,33 +378,33 @@ impl Player {
         play_request_id
     }
 
-    pub fn preload(&self, track_id: SpotifyId) {
+    pub fn preload(&mut self, track_id: SpotifyId) {
         self.command(PlayerCommand::Preload { track_id });
     }
 
-    pub fn play(&self) {
+    pub fn play(&mut self) {
         self.command(PlayerCommand::Play)
     }
 
-    pub fn pause(&self) {
+    pub fn pause(&mut self) {
         self.command(PlayerCommand::Pause)
     }
 
-    pub fn stop(&self) {
+    pub fn stop(&mut self) {
         self.command(PlayerCommand::Stop)
     }
 
-    pub fn seek(&self, position_ms: u32) {
+    pub fn seek(&mut self, position_ms: u32) {
         self.command(PlayerCommand::Seek(position_ms));
     }
 
-    pub fn get_player_event_channel(&self) -> PlayerEventChannel {
+    pub fn get_player_event_channel(&mut self) -> PlayerEventChannel {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         self.command(PlayerCommand::AddEventSender(event_sender));
         event_receiver
     }
 
-    pub async fn await_end_of_track(&self) {
+    pub async fn await_end_of_track(&mut self) {
         let mut channel = self.get_player_event_channel();
         while let Some(event) = channel.recv().await {
             if matches!(
@@ -413,16 +416,20 @@ impl Player {
         }
     }
 
-    pub fn set_sink_event_callback(&self, callback: Option<SinkEventCallback>) {
+    pub fn set_sink_event_callback(&mut self, callback: Option<SinkEventCallback>) {
         self.command(PlayerCommand::SetSinkEventCallback(callback));
     }
 
-    pub fn emit_volume_set_event(&self, volume: u16) {
+    pub fn emit_volume_set_event(&mut self, volume: u16) {
         self.command(PlayerCommand::EmitVolumeSetEvent(volume));
     }
 
-    pub fn set_auto_normalise_as_album(&self, setting: bool) {
+    pub fn set_auto_normalise_as_album(&mut self, setting: bool) {
         self.command(PlayerCommand::SetAutoNormaliseAsAlbum(setting));
+    }
+
+    pub fn is_invalid(&self) -> bool {
+        self.is_invalid
     }
 }
 

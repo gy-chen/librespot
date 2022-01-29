@@ -1658,7 +1658,7 @@ async fn main() {
                     let format = setup.format;
                     let backend = setup.backend;
                     let device = setup.device.clone();
-                    let (player, event_channel) =
+                    let (mut player, event_channel) =
                         Player::new(player_config, session.clone(), audio_filter, move || {
                             (backend)(device, format)
                         });

@@ -47,7 +47,7 @@ async fn main() {
         let command = Command::parse(&command);
 
         loop {
-            if session.is_invalid() {
+            if session.is_invalid() || player.is_invalid() {
                 session = connect_session().await.unwrap();
                 player = create_player(
                     player_config.clone(),

@@ -223,7 +223,7 @@ impl Spirc {
     pub fn new(
         config: ConnectConfig,
         session: Session,
-        player: Player,
+        mut player: Player,
         mixer: Box<dyn Mixer>,
     ) -> (Spirc, impl Future<Output = ()>) {
         debug!("new Spirc[{}]", session.session_id());
@@ -258,7 +258,7 @@ impl Spirc {
 
         let device = initial_device_state(config);
 
-        let player_events = player.get_player_event_channel();
+        let  player_events = player.get_player_event_channel();
 
         let mut task = SpircTask {
             player,
