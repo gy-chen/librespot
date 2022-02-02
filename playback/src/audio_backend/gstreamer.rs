@@ -128,6 +128,14 @@ impl Open for GstreamerSink {
 
 impl Sink for GstreamerSink {
     sink_as_bytes!();
+
+    fn stop(&mut self) -> SinkResult<()> {
+        self.pipeline
+            .set_state(gst::State::Null)
+            .expect("unable to set the pipeline to the `Null` state");
+
+        Ok(())
+    }
 }
 
 impl SinkAsBytes for GstreamerSink {
