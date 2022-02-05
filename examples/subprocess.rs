@@ -46,6 +46,14 @@ async fn main() {
 
         let command = Command::parse(&command);
 
+        match command {
+            Ok(command) => match execute_command(&mut player, &command).await {
+                Ok(_) => eprintln!("="),
+                Err(msg) => eprintln!("?{}", msg),
+            },
+            Err(e) => eprintln!("?{}", e),
+        }
+
         loop {
             if session.is_invalid() || player.is_invalid() {
                 session = connect_session().await.unwrap();
@@ -58,14 +66,6 @@ async fn main() {
                 continue;
             }
             break;
-        }
-
-        match command {
-            Ok(command) => match execute_command(&mut player, &command).await {
-                Ok(_) => eprintln!("="),
-                Err(msg) => eprintln!("?{}", msg),
-            },
-            Err(e) => eprintln!("?{}", e),
         }
     }
 }
