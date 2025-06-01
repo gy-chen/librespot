@@ -86,7 +86,7 @@ async fn main() {
                 if let Some(cmd) = command {
                     match cmd {
                         Command::Play(track_id) => {
-                            match SpotifyId::from_base62(&track_id) {
+                            match SpotifyId::from_uri(&track_id) {
                                 Ok(mut track) => {
                                     track.item_type = SpotifyItemType::Track;
                                     player.load(track, true, 0);
