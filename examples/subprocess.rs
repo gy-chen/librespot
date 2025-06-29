@@ -1,4 +1,5 @@
 use librespot_discovery::Credentials;
+use simple_log::LogConfigBuilder;
 use std::env;
 use tokio::io::AsyncBufReadExt;
 
@@ -15,9 +16,12 @@ use tokio::io::{self, BufReader};
 
 #[tokio::main]
 async fn main() {
-    let mut builder = env_logger::Builder::new();
-    builder.parse_filters("librespot=trace");
-    builder.init();
+    let config = LogConfigBuilder::builder()
+        .path("./gyrespot.log")
+        .output_file()
+        .build();
+
+    simple_log::new(config).expect("cannot initialze logger");
 
     const DEFAULT_CACHE_DIR: &str = "./.cache";
 
@@ -91,6 +95,7 @@ async fn main() {
                                     track.item_type = SpotifyItemType::Track;
                                     player.load(track, true, 0);
                                     player.await_end_of_track().await;
+                                    eprintln!("OK")
                                 },
                                 _ => {}
                             }
